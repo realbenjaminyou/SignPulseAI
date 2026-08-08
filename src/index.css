@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700&family=Noto+Sans:wght@300;400;500;700&display=swap');
+
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Noto Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-heading: "Figtree", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --color-background: oklch(0.12 0.015 260);
+  --color-surface: oklch(0.18 0.02 260);
+  --color-surface-elevated: oklch(0.22 0.025 260);
+  --color-primary: oklch(0.62 0.18 250);
+  --color-on-primary: oklch(1.0 0 0);
+  --color-accent: oklch(0.72 0.15 190);
+  --color-foreground: oklch(0.93 0.005 260);
+  --color-muted: oklch(0.6 0.02 260);
+  --color-border: oklch(0.3 0.02 260);
+  --color-destructive: oklch(0.62 0.22 30);
+  --color-success: oklch(0.65 0.18 145);
+  --color-ring: oklch(0.62 0.18 250);
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+}
+
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+/* Video mirror */
+.video-mirror {
+  transform: scaleX(-1);
+}
+
+/* Utilities */
+@utility scrollable-transcript {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(0.3 0.02 260) transparent;
+}
