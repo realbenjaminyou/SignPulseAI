@@ -30,6 +30,19 @@ interface InterpretResponse {
   error?: string;
 }
 
+/** Extract HTTP status from a Gemini API error message */
+function extractStatusFromError(message: string): number | null {
+  const match = message.match(/Gemini API error: (\d+)/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/** Determine if this is a retryable Gemini error (429 rate-limit, 5xx server error) */
+function isRetryableError(message: string): boolean {
+  const status = extractStatusFromError(message);
+  if (status === null) return false;
+  return status === 429 || status >= 500;
+}
+
 Deno.serve(async (req: Request) => {
   // ── CORS preflight ──
   if (req.method === 'OPTIONS') {
@@ -94,7 +107,14 @@ Return ONLY valid JSON, no markdown formatting.`;
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Gemini API error: ${response.status} — ${errorText}`);
+      const errMsg = `Gemini API error: ${response.status} — ${errorText}`;
+      // Return the actual Gemini status code so the client can distinguish
+      // 429 rate-limit from other errors
+      const body: InterpretResponse = { success: false, error: errMsg };
+      return new Response(JSON.stringify(body), {
+        status: response.status,
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      });
     }
 
     const result = await response.json();
@@ -136,8 +156,12 @@ Return ONLY valid JSON, no markdown formatting.`;
       error: message,
     };
 
+    // Pass through Gemini status codes (429, 503) when possible
+    const geminiStatus = extractStatusFromError(message);
+    const statusCode = geminiStatus ?? 500;
+
     return new Response(JSON.stringify(body), {
-      status: 500,
+      status: statusCode,
       headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
     });
   }
