@@ -18,6 +18,23 @@ export interface FrameData {
   timestamp: number;
 }
 
+export interface HandLandmark {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface HandLandmarkData {
+  handedness: 'Left' | 'Right';
+  landmarks: HandLandmark[];
+}
+
+export interface HandLandmarkPayload {
+  timestamp: number;
+  hands_detected: number;
+  hands: HandLandmarkData[];
+}
+
 /* ── Gesture Interpretation ── */
 
 export interface GestureResult {
