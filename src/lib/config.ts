@@ -1,7 +1,7 @@
 /* ── Supabase project ── */
 
 const SUPABASE_PROJECT_REF = 'kuivnmlemzjgcmggeght';
-const SUPABASE_ANON_KEY =
+export const SUPABASE_ANON_KEY =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt1aXZubWxlbXpqZ2NtZ2dlZ2h0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyNDE4MDIsImV4cCI6MjEwMTgxNzgwMn0.bJcoNwmPzcpM4UqtGC4h1ctYDoRA0wJw6tnRHy4EvA0';
 
 export const EDGE_FUNCTIONS = {
