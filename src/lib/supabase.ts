@@ -15,10 +15,23 @@ import type {
   SpeechmaticsTokenResponse,
 } from './types';
 
-/* ── Supabase client (public anon key — safe for client) ── */
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: { persistSession: false },
-});
+/* ── Lazy Supabase client ── */
+
+let _supabase: ReturnType<typeof createClient> | null = null;
+
+function getSupabase() {
+  if (!_supabase) {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      throw new Error(
+        'Supabase is not configured. Please connect a Supabase project to enable cloud features.',
+      );
+    }
+    _supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false },
+    });
+  }
+  return _supabase;
+}
 
 /* ── Generic edge function caller with retry + exponential backoff ── */
 
@@ -31,7 +44,7 @@ async function callEdgeFunction<T>(
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const { data, error } = await supabase.functions.invoke(name, {
+      const { data, error } = await getSupabase().functions.invoke(name, {
         body: body as Record<string, unknown> | undefined,
         signal,
       });
