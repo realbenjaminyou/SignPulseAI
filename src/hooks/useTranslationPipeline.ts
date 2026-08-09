@@ -5,6 +5,7 @@ import type {
   HandData,
   FrameData,
   TranslationEntry,
+  HandLandmarkPayload,
 } from '../lib/types';
 import {
   getSpeechmaticsToken,
@@ -18,10 +19,6 @@ import {
   LANDMARK_BUFFER_MS,
   INTERPRET_INTERVAL_MS,
   PAUSE_DETECTION_MS,
-  NO_HANDS_TIMEOUT_MS,
-  MOVEMENT_THRESHOLD,
-  TARGET_FPS,
-  MAX_FPS,
   SPEECHMATICS_STT_URL,
   SPEECHMATICS_LANGUAGE,
 } from '../lib/config';
@@ -32,38 +29,67 @@ function nextId(): string {
   return `t${Date.now()}-${++idCounter}`;
 }
 
-/* ── L2 distance between two landmarks ── */
-function landmarkDelta(
-  a: { x: number; y: number; z: number },
-  b: { x: number; y: number; z: number },
-): number {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  const dz = a.z - b.z;
-  return Math.sqrt(dx * dx + dy * dy + dz * dz);
-}
+/* ── Fallback local gesture recognizer ── */
+function recognizeHandGesture(
+  landmarks: Array<{ x: number; y: number; z: number }>,
+): { gesture: string; confidence: number } | null {
+  if (!landmarks || landmarks.length < 21) return null;
 
-/* ── Average movement across all landmarks ── */
-function averageMovement(
-  current: HandData[],
-  previous: HandData[],
-): number {
-  if (current.length === 0 || previous.length === 0) return 0;
-  let total = 0;
-  let count = 0;
-  for (let h = 0; h < Math.min(current.length, previous.length); h++) {
-    const cLm = current[h].landmarks;
-    const pLm = previous[h].landmarks;
-    for (let i = 0; i < Math.min(cLm.length, pLm.length); i++) {
-      total += landmarkDelta(cLm[i], pLm[i]);
-      count++;
-    }
+  const wrist = landmarks[0];
+  const thumbTip = landmarks[4];
+  const indexTip = landmarks[8];
+  const indexMcp = landmarks[5];
+  const middleTip = landmarks[12];
+  const middleMcp = landmarks[9];
+  const ringTip = landmarks[16];
+  const ringMcp = landmarks[13];
+  const pinkyTip = landmarks[20];
+  const pinkyMcp = landmarks[17];
+
+  const isThumbUp =
+    thumbTip.y < wrist.y && indexTip.y > indexMcp.y && middleTip.y > middleMcp.y;
+  const isIndexExt = indexTip.y < indexMcp.y;
+  const isMiddleExt = middleTip.y < middleMcp.y;
+  const isRingExt = ringTip.y < ringMcp.y;
+  const isPinkyExt = pinkyTip.y < pinkyMcp.y;
+
+  const dxIndexThumb = Math.hypot(
+    indexTip.x - thumbTip.x,
+    indexTip.y - thumbTip.y,
+  );
+
+  if (dxIndexThumb < 0.08 && isMiddleExt && isRingExt && isPinkyExt) {
+    return { gesture: 'OK', confidence: 0.95 };
   }
-  return count > 0 ? total / count : 0;
+
+  if (isThumbUp && !isIndexExt && !isMiddleExt && !isRingExt && !isPinkyExt) {
+    return { gesture: 'YES', confidence: 0.9 };
+  }
+
+  if (isIndexExt && isMiddleExt && !isRingExt && !isPinkyExt) {
+    return { gesture: 'PEACE', confidence: 0.92 };
+  }
+
+  if (isIndexExt && isPinkyExt && !isMiddleExt && !isRingExt) {
+    return { gesture: 'I-LOVE-YOU', confidence: 0.95 };
+  }
+
+  if (isIndexExt && !isMiddleExt && !isRingExt && !isPinkyExt) {
+    return { gesture: 'POINTING', confidence: 0.88 };
+  }
+
+  if (isIndexExt && isMiddleExt && isRingExt && isPinkyExt) {
+    return { gesture: 'HELLO', confidence: 0.9 };
+  }
+
+  if (!isIndexExt && !isMiddleExt && !isRingExt && !isPinkyExt) {
+    return { gesture: 'NO', confidence: 0.85 };
+  }
+
+  return { gesture: 'SIGN', confidence: 0.75 };
 }
 
 /* ── Initial state ── */
-
 const INITIAL_STATE: PipelineState = {
   status: 'idle',
   currentSentence: '',
@@ -77,90 +103,38 @@ const INITIAL_STATE: PipelineState = {
 };
 
 /* ── Hook ── */
-
 export function useTranslationPipeline() {
   const [state, setState] = useState<PipelineState>(INITIAL_STATE);
 
   // Refs (mutable, no re-render)
   const streamRef = useRef<MediaStream | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const animFrameRef = useRef<number>(0);
   const statusRef = useRef<PipelineStatus>('idle');
   const ttsEnabledRef = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Landmark buffer
+  // Landmark buffers & payload stream
   const landmarkBufferRef = useRef<FrameData[]>([]);
+  const payloadBufferRef = useRef<HandLandmarkPayload[]>([]);
   const lastInterpretRef = useRef<number>(0);
   const lastHandSeenRef = useRef<number>(Date.now());
   const previousHandsRef = useRef<HandData[]>([]);
   const lastMovementRef = useRef<number>(0);
   const pauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isInterpretingRef = useRef<boolean>(false);
 
   // STT
   const sttWsRef = useRef<WebSocket | null>(null);
-
-  // FPS tracking
-  const frameCountRef = useRef<number>(0);
-  const fpsTimerRef = useRef<number>(Date.now());
 
   // Speech queue
   const speechQueueRef = useRef<string[]>([]);
   const isSpeakingRef = useRef(false);
 
   // ── Helpers ──
-
   const updateState = useCallback((patch: Partial<PipelineState>) => {
     setState((prev) => ({ ...prev, ...patch }));
   }, []);
 
-  // ── MediaPipe hand landmark detection (browser-side) ──
-
-  const handLandmarkerRef = useRef<any>(null);
-  const mediapipeInitializedRef = useRef(false);
-
-  const initMediaPipe = useCallback(async () => {
-    if (mediapipeInitializedRef.current) return;
-
-    try {
-      // Dynamically import the task-vision module
-      const { HandLandmarker, FilesetResolver } = await import(
-        '@mediapipe/tasks-vision'
-      );
-
-      const vision = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm',
-      );
-
-      handLandmarkerRef.current = await HandLandmarker.createFromOptions(
-        vision,
-        {
-          baseOptions: {
-            modelAssetPath:
-              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-          numHands: 2,
-          minHandDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5,
-        },
-      );
-
-      mediapipeInitializedRef.current = true;
-    } catch (err) {
-      console.error('Failed to initialize MediaPipe:', err);
-      updateState({
-        error: 'Failed to initialize hand detection. Please check your browser.',
-        status: 'error',
-      });
-      throw err;
-    }
-  }, [updateState]);
-
   // ── STT WebSocket ──
-
   const connectStt = useCallback(async () => {
     try {
       const token = await getSpeechmaticsToken();
@@ -196,7 +170,10 @@ export function useTranslationPipeline() {
           msg.message === 'AddPartialTranscript' ||
           msg.message === 'AddTranscript'
         ) {
-          const text = msg.results?.map((r: any) => r.alternatives?.[0]?.content ?? '').join(' ').trim();
+          const text = msg.results
+            ?.map((r: any) => r.alternatives?.[0]?.content ?? '')
+            .join(' ')
+            .trim();
           if (text) {
             // Add speech transcript entry
             const entry: TranslationEntry = {
@@ -240,7 +217,6 @@ export function useTranslationPipeline() {
   }, [updateState]);
 
   // ── Mic stream → STT ──
-
   let micStream: MediaStream | null = null;
 
   async function startMicStream(ws: WebSocket) {
@@ -264,11 +240,12 @@ export function useTranslationPipeline() {
       processor.onaudioprocess = (e) => {
         if (ws.readyState === WebSocket.OPEN) {
           const input = e.inputBuffer.getChannelData(0);
-          // Send as ArrayBuffer
-          ws.send(input.buffer.slice(
-            input.byteOffset,
-            input.byteOffset + input.byteLength,
-          ));
+          ws.send(
+            input.buffer.slice(
+              input.byteOffset,
+              input.byteOffset + input.byteLength,
+            ),
+          );
         }
       };
     } catch (err) {
@@ -277,58 +254,7 @@ export function useTranslationPipeline() {
     }
   }
 
-  // ── Gesture interpretation ──
-
-  const runInterpretation = useCallback(async () => {
-    const buffer = landmarkBufferRef.current;
-    if (buffer.length === 0) return;
-
-    const now = Date.now();
-    if (now - lastInterpretRef.current < INTERPRET_INTERVAL_MS) return;
-
-    // Check movement threshold — skip if no meaningful movement
-    if (lastMovementRef.current < MOVEMENT_THRESHOLD && buffer.length > 3) {
-      return;
-    }
-
-    lastInterpretRef.current = now;
-
-    try {
-      const abortController = abortRef.current;
-      if (!abortController) return;
-
-      // Send the landmark frames for interpretation
-      const result = await interpretGesture(
-        buffer.map((f) => f.hands),
-        abortController.signal,
-      );
-
-      if (result.success && result.data) {
-        const { gesture, confidence } = result.data;
-
-        if (gesture && confidence >= 0.6) {
-          const entry: TranslationEntry = {
-            id: nextId(),
-            text: gesture,
-            timestamp: now,
-            confidence,
-            type: 'gesture',
-          };
-
-          setState((prev) => ({
-            ...prev,
-            transcript: [...prev.transcript, entry],
-          }));
-        }
-      }
-    } catch (err: any) {
-      if (err?.name === 'AbortError') return;
-      console.error('Interpretation failed:', err);
-    }
-  }, []);
-
   // ── Sentence assembly ──
-
   const runAssembly = useCallback(
     async (gestureText: string, speechText: string | null) => {
       try {
@@ -370,56 +296,19 @@ export function useTranslationPipeline() {
     [],
   );
 
-  // ── Speech queue processing ──
-
-  async function processSpeechQueue() {
-    if (isSpeakingRef.current || speechQueueRef.current.length === 0) return;
-    isSpeakingRef.current = true;
-
-    const text = speechQueueRef.current.shift()!;
-
-    try {
-      // Try edge function TTS first, fall back to browser TTS
-      const audio = await generateSpeech(text);
-      if (audio && audio.length > 0) {
-        await playPcmAudio(audio);
-      } else {
-        throw new Error('Empty audio response');
-      }
-    } catch {
-      // Fallback to browser TTS
-      try {
-        await speakWithBrowserTTS(text);
-      } catch (ttsErr) {
-        console.error('TTS fallback also failed:', ttsErr);
-      }
-    } finally {
-      isSpeakingRef.current = false;
-      // Process next in queue
-      if (speechQueueRef.current.length > 0) {
-        processSpeechQueue();
-      }
-    }
-  }
-
   // ── Pause detection → trigger assembly ──
-
   const detectPause = useCallback(() => {
     if (pauseTimerRef.current) {
       clearTimeout(pauseTimerRef.current);
     }
 
     pauseTimerRef.current = setTimeout(() => {
-      // Collect recent gesture text entries
-      const recentGestures = landmarkBufferRef.current;
-      if (recentGestures.length < 3) return;
-
-      // Get transcript entries since last assembly
       setState((prev) => {
-        const lastAssembledIdx = prev.transcript
-          .map((t, i) => (t.type === 'assembled' ? i : -1))
-          .filter((i) => i >= 0)
-          .pop() ?? -1;
+        const lastAssembledIdx =
+          prev.transcript
+            .map((t, i) => (t.type === 'assembled' ? i : -1))
+            .filter((i) => i >= 0)
+            .pop() ?? -1;
 
         const recentEntries = prev.transcript.slice(lastAssembledIdx + 1);
         const gestureTexts = recentEntries
@@ -431,9 +320,9 @@ export function useTranslationPipeline() {
 
         if (gestureTexts.length > 0 || speechTexts.length > 0) {
           const gestureStr = gestureTexts.join(' ');
-          const speechStr = speechTexts.length > 0 ? speechTexts.join(' ') : null;
+          const speechStr =
+            speechTexts.length > 0 ? speechTexts.join(' ') : null;
 
-          // Trigger assembly (async, outside setState)
           setTimeout(() => runAssembly(gestureStr, speechStr), 0);
         }
 
@@ -442,116 +331,140 @@ export function useTranslationPipeline() {
     }, PAUSE_DETECTION_MS);
   }, [runAssembly]);
 
-  // ── Main capture loop ──
+  // ── Process incoming HandLandmarkPayload from CameraPreview ──
+  const processLandmarkPayload = useCallback(
+    async (payload: HandLandmarkPayload) => {
+      if (statusRef.current !== 'running') return;
+      if (!payload || payload.hands_detected === 0) return;
 
-  const captureLoop = useCallback(async () => {
-    if (statusRef.current !== 'running') return;
+      const now = Date.now();
+      lastHandSeenRef.current = now;
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas || !handLandmarkerRef.current) {
-      animFrameRef.current = requestAnimationFrame(captureLoop);
-      return;
-    }
+      // Log outgoing payload stream in developer tools for debugging
+      console.log(
+        '[SignPulseAI Pipeline] Streaming hand landmark payload:',
+        payload,
+      );
 
-    // FPS tracking
-    frameCountRef.current++;
-    const elapsed = Date.now() - fpsTimerRef.current;
-    if (elapsed >= 1000) {
-      const fps = Math.round((frameCountRef.current * 1000) / elapsed);
-      updateState({ fps: Math.min(fps, MAX_FPS) });
-      frameCountRef.current = 0;
-      fpsTimerRef.current = Date.now();
-    }
+      // Update hands count in state
+      updateState({
+        handsDetected: payload.hands_detected,
+        error:
+          state.error === 'No hands detected. Please position your hands in frame.'
+            ? null
+            : state.error,
+      });
 
-    const now = Date.now();
+      // Reset pause timer on new landmark detection
+      detectPause();
 
-    // Run MediaPipe hand detection
-    try {
-      const result = handLandmarkerRef.current.detectForVideo(video, now);
+      // Buffer payload
+      payloadBufferRef.current.push(payload);
+      const maxBufferSize = Math.ceil(LANDMARK_BUFFER_MS / 100); // 100ms interval (10 FPS)
+      if (payloadBufferRef.current.length > maxBufferSize) {
+        payloadBufferRef.current = payloadBufferRef.current.slice(
+          -maxBufferSize,
+        );
+      }
 
-      const hands: HandData[] = [];
+      // Check throttle interval for interpretation call
+      if (now - lastInterpretRef.current < INTERPRET_INTERVAL_MS) return;
+      if (isInterpretingRef.current) return;
 
-      if (result.landmarks && result.landmarks.length > 0) {
-        for (let h = 0; h < result.landmarks.length; h++) {
-          const lm = result.landmarks[h];
-          const handedness = result.handedness?.[h]?.[0]?.categoryName ?? 'Right';
-          const confidence = result.handedness?.[h]?.[0]?.score ?? 0.5;
+      lastInterpretRef.current = now;
+      isInterpretingRef.current = true;
 
-          hands.push({
-            landmarks: lm.map((p: any) => ({
-              x: p.x,
-              y: p.y,
-              z: p.z,
-              visibility: 1,
-            })),
-            handedness: handedness as 'Left' | 'Right',
+      const startTime = performance.now();
+
+      try {
+        const signal = abortRef.current?.signal;
+        const framesToSend = [...payloadBufferRef.current];
+
+        // Pass landmark JSON payloads directly to Supabase Edge Function endpoint `interpret-gesture`
+        let gesture: string | null = null;
+        let confidence = 0.5;
+
+        try {
+          const result = await interpretGesture(framesToSend, signal);
+          if (result?.success && result?.data?.gesture) {
+            gesture = result.data.gesture;
+            confidence = result.data.confidence ?? 0.8;
+          }
+        } catch {
+          // Cloud Edge function fallback: local landmark gesture recognition
+          const latestHand = payload.hands[0];
+          if (latestHand?.landmarks) {
+            const fallback = recognizeHandGesture(latestHand.landmarks);
+            if (fallback) {
+              gesture = fallback.gesture;
+              confidence = fallback.confidence;
+            }
+          }
+        }
+
+        const latency = Math.round(performance.now() - startTime);
+        updateState({ latency });
+
+        if (gesture && gesture !== 'UNKNOWN' && confidence >= 0.5) {
+          const entry: TranslationEntry = {
+            id: nextId(),
+            text: gesture,
+            timestamp: now,
             confidence,
+            type: 'gesture',
+          };
+          setState((prev) => {
+            // Avoid duplicate back-to-back entries of the exact same gesture within 1 second
+            const lastEntry = prev.transcript[prev.transcript.length - 1];
+            if (lastEntry && lastEntry.text === gesture && now - lastEntry.timestamp < 1000) {
+              return prev;
+            }
+            return {
+              ...prev,
+              currentSentence: gesture,
+              transcript: [...prev.transcript, entry],
+            };
           });
         }
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+        console.error('[SignPulseAI Pipeline] Interpretation error:', err);
+      } finally {
+        isInterpretingRef.current = false;
       }
+    },
+    [updateState, state.error, detectPause],
+  );
 
-      const frameData: FrameData = {
-        hands,
-        timestamp: now,
-      };
+  // ── Speech queue processing ──
+  async function processSpeechQueue() {
+    if (isSpeakingRef.current || speechQueueRef.current.length === 0) return;
+    isSpeakingRef.current = true;
 
-      // Calculate movement
-      if (hands.length > 0) {
-        lastHandSeenRef.current = now;
-        const movement = averageMovement(hands, previousHandsRef.current);
-        lastMovementRef.current = movement;
-        previousHandsRef.current = hands;
+    const text = speechQueueRef.current.shift()!;
 
-        // Add to buffer
-        landmarkBufferRef.current.push(frameData);
-
-        // Keep buffer length limited
-        const maxBufferSize = Math.ceil(LANDMARK_BUFFER_MS / (1000 / TARGET_FPS));
-        if (landmarkBufferRef.current.length > maxBufferSize) {
-          landmarkBufferRef.current = landmarkBufferRef.current.slice(-maxBufferSize);
-        }
-
-        // Reset pause timer
-        detectPause();
-
-        // Run interpretation
-        runInterpretation();
+    try {
+      const audio = await generateSpeech(text);
+      if (audio && audio.length > 0) {
+        await playPcmAudio(audio);
       } else {
-        // No hands detected
-        lastMovementRef.current = 0;
+        throw new Error('Empty audio response');
       }
-
-      // Update state: hands detected
-      const handsCount = hands.filter((h) => h.confidence >= 0.5).length;
-      updateState({ handsDetected: handsCount });
-
-      // No hands warning
-      if (handsCount === 0 && now - lastHandSeenRef.current > NO_HANDS_TIMEOUT_MS) {
-        if (!state.error) {
-          updateState({ error: 'No hands detected. Please position your hands in frame.' });
-        }
-      } else if (handsCount > 0 && state.error === 'No hands detected. Please position your hands in frame.') {
-        updateState({ error: null });
+    } catch {
+      try {
+        await speakWithBrowserTTS(text);
+      } catch (ttsErr) {
+        console.error('TTS fallback failed:', ttsErr);
       }
-    } catch (err: any) {
-      if (err?.name === 'AbortError' || err?.name === 'InvalidStateError') {
-        // Expected when stopping
-      } else {
-        console.error('Capture loop error:', err);
+    } finally {
+      isSpeakingRef.current = false;
+      if (speechQueueRef.current.length > 0) {
+        processSpeechQueue();
       }
     }
-
-    if (statusRef.current === 'running') {
-      const nextDelay = 1000 / TARGET_FPS;
-      setTimeout(() => {
-        animFrameRef.current = requestAnimationFrame(captureLoop);
-      }, nextDelay);
-    }
-  }, [updateState, runInterpretation, detectPause, state.error]);
+  }
 
   // ── Start session ──
-
   const startSession = useCallback(async () => {
     if (statusRef.current === 'running') return;
 
@@ -569,51 +482,18 @@ export function useTranslationPipeline() {
 
       abortRef.current = new AbortController();
 
-      // Init MediaPipe
-      await initMediaPipe();
-
-      // Start camera
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          facingMode: 'user',
-          frameRate: { ideal: TARGET_FPS },
-        },
-        audio: false,
-      });
-
-      streamRef.current = stream;
-
-      // Create hidden video element for processing
-      const video = document.createElement('video');
-      video.srcObject = stream;
-      video.setAttribute('playsinline', '');
-      video.setAttribute('autoplay', '');
-      await video.play();
-      videoRef.current = video;
-
-      // Create hidden canvas for frame extraction
-      const canvas = document.createElement('canvas');
-      canvas.width = 640;
-      canvas.height = 480;
-      canvasRef.current = canvas;
-
-      // Reset tracking
+      // Reset buffers
       landmarkBufferRef.current = [];
+      payloadBufferRef.current = [];
       lastInterpretRef.current = Date.now();
       lastHandSeenRef.current = Date.now();
       previousHandsRef.current = [];
       lastMovementRef.current = 0;
-      frameCountRef.current = 0;
-      fpsTimerRef.current = Date.now();
       speechQueueRef.current = [];
       isSpeakingRef.current = false;
 
-      // Start capture loop
       statusRef.current = 'running';
       updateState({ status: 'running' });
-      animFrameRef.current = requestAnimationFrame(captureLoop);
 
       // Connect STT
       connectStt();
@@ -622,56 +502,43 @@ export function useTranslationPipeline() {
       statusRef.current = 'error';
       updateState({
         status: 'error',
-        error: err?.message ?? 'Failed to start camera or hand detection',
+        error: err?.message ?? 'Failed to start translation session',
       });
     }
-  }, [initMediaPipe, captureLoop, connectStt, updateState]);
+  }, [connectStt, updateState]);
 
   // ── End session ──
-
   const endSession = useCallback(() => {
     statusRef.current = 'ended';
     updateState({ status: 'ended' });
 
-    // Abort pending requests
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
     }
 
-    // Stop capture loop
-    cancelAnimationFrame(animFrameRef.current);
-
-    // Close STT
     if (sttWsRef.current) {
       sttWsRef.current.close();
       sttWsRef.current = null;
     }
 
-    // Stop camera
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
 
-    // Clean up video/canvas
-    videoRef.current = null;
-    canvasRef.current = null;
-
-    // Clean up mic
     if (micStream) {
       micStream.getTracks().forEach((t) => t.stop());
       micStream = null;
     }
 
-    // Clear timers
     if (pauseTimerRef.current) {
       clearTimeout(pauseTimerRef.current);
       pauseTimerRef.current = null;
     }
 
-    // Clear buffers
     landmarkBufferRef.current = [];
+    payloadBufferRef.current = [];
     speechQueueRef.current = [];
     isSpeakingRef.current = false;
 
@@ -684,14 +551,12 @@ export function useTranslationPipeline() {
   }, [updateState]);
 
   // ── Toggle TTS ──
-
   const toggleTts = useCallback(() => {
     ttsEnabledRef.current = !ttsEnabledRef.current;
     updateState({ ttsEnabled: ttsEnabledRef.current });
   }, [updateState]);
 
   // ── Toggle session ──
-
   const toggleSession = useCallback(() => {
     if (statusRef.current === 'running') {
       endSession();
@@ -701,10 +566,8 @@ export function useTranslationPipeline() {
   }, [startSession, endSession]);
 
   // ── Cleanup on unmount ──
-
   useEffect(() => {
     return () => {
-      cancelAnimationFrame(animFrameRef.current);
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop());
       }
@@ -724,5 +587,6 @@ export function useTranslationPipeline() {
     toggleTts,
     startSession,
     endSession,
+    processLandmarkPayload,
   };
 }

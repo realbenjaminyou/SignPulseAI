@@ -6,19 +6,16 @@ import StatusBar from './components/StatusBar';
 import { useTranslationPipeline } from './hooks/useTranslationPipeline';
 
 export default function App() {
-  const { state, stream, toggleSession, toggleTts } = useTranslationPipeline();
+  const { state, stream, toggleSession, toggleTts, processLandmarkPayload } =
+    useTranslationPipeline();
 
   const isRunning = state.status === 'running';
-  const isBusy =
-    state.status === 'initializing';
+  const isBusy = state.status === 'initializing';
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       {/* Skip link */}
-      <a
-        href="#main-content"
-        className="skip-link"
-      >
+      <a href="#main-content" className="skip-link">
         Skip to content
       </a>
 
@@ -42,9 +39,10 @@ export default function App() {
         {/* Camera preview */}
         <CameraPreview
           stream={stream}
-          hands={[]} // hands are rendered inside the canvas overlay
+          hands={[]}
           isActive={isRunning}
           fps={state.fps}
+          onLandmarksDetected={processLandmarkPayload}
         />
 
         {/* Session controls */}

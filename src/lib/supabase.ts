@@ -13,6 +13,7 @@ import type {
   TtsRequest,
   TtsResponse,
   SpeechmaticsTokenResponse,
+  HandLandmarkPayload,
 } from './types';
 
 /* ── Lazy Supabase client ── */
@@ -86,7 +87,7 @@ export async function getSpeechmaticsToken(
 /* ── Gesture interpretation ── */
 
 export async function interpretGesture(
-  frames: unknown[],
+  frames: HandLandmarkPayload[] | unknown[],
   signal?: AbortSignal,
 ): Promise<InterpretResponse> {
   return callEdgeFunction<InterpretResponse>(

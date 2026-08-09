@@ -1,80 +1,255 @@
-import { useRef, useEffect, useCallback } from 'react';
-import { Camera, CameraOff } from 'lucide-react';
-import type { HandData } from '../lib/types';
-import { MAX_FPS } from '../lib/config';
+import { useRef, useEffect, useCallback, useState } from 'react';
+import { Camera, CameraOff, AlertCircle } from 'lucide-react';
+import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import type { HandData, HandLandmarkPayload, HandLandmarkData } from '../lib/types';
+import { CAMERA_CONSTRAINTS } from '../lib/config';
 
 interface CameraPreviewProps {
-  stream: MediaStream | null;
-  hands: HandData[];
-  isActive: boolean;
-  fps: number;
+  stream?: MediaStream | null;
+  hands?: HandData[];
+  isActive?: boolean;
+  fps?: number;
+  onLandmarksDetected?: (payload: HandLandmarkPayload) => void;
 }
 
+const FRAME_INTERVAL_MS = 100; // ~10 FPS throttling
+
 export default function CameraPreview({
-  stream,
-  hands,
-  isActive,
-  fps,
+  stream: parentStream = null,
+  hands = [],
+  isActive = false,
+  fps: parentFps = 0,
+  onLandmarksDetected,
 }: CameraPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number>(0);
-  const lastDrawRef = useRef<number>(0);
+  const lastCaptureTimeRef = useRef<number>(0);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const handLandmarkerRef = useRef<HandLandmarker | null>(null);
+  const [isModelLoading, setIsModelLoading] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
+  const [measuredFps, setMeasuredFps] = useState<number>(0);
 
-  /* ── Attach stream to video ── */
+  const frameCountRef = useRef<number>(0);
+  const fpsTimerRef = useRef<number>(performance.now());
+  const activeHandsRef = useRef<HandData[]>([]);
+
+  // ── 1. Initialize MediaPipe HandLandmarker ──
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
+    let isMounted = true;
 
-    if (stream) {
-      video.srcObject = stream;
-      video.play().catch(() => {});
-    } else {
-      video.srcObject = null;
+    async function initHandLandmarker() {
+      if (handLandmarkerRef.current) return;
+      try {
+        setIsModelLoading(true);
+        setModelError(null);
+
+        const vision = await FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm',
+        );
+
+        const landmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+            delegate: 'GPU',
+          },
+          runningMode: 'VIDEO',
+          numHands: 2,
+          minHandDetectionConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+
+        if (isMounted) {
+          handLandmarkerRef.current = landmarker;
+          setIsModelLoading(false);
+        } else {
+          landmarker.close();
+        }
+      } catch (err) {
+        console.error('Failed to initialize MediaPipe HandLandmarker:', err);
+        if (isMounted) {
+          setModelError('Failed to load MediaPipe hand detection model');
+          setIsModelLoading(false);
+        }
+      }
     }
-  }, [stream]);
 
-  /* ── Draw hand landmarks on canvas ── */
-  const draw = useCallback(
-    (timestamp: number) => {
-      const canvas = canvasRef.current;
-      const video = videoRef.current;
-      if (!canvas || !video) return;
+    initHandLandmarker();
 
-      // Throttle draw to match camera FPS
-      const elapsed = timestamp - lastDrawRef.current;
-      const minInterval = 1000 / MAX_FPS;
-      if (elapsed < minInterval) {
-        animFrameRef.current = requestAnimationFrame(draw);
+    return () => {
+      isMounted = false;
+      if (handLandmarkerRef.current) {
+        handLandmarkerRef.current.close();
+        handLandmarkerRef.current = null;
+      }
+    };
+  }, []);
+
+  // ── 2. Handle Webcam Stream ──
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function setupCamera() {
+      if (!isActive) {
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach((t) => t.stop());
+          localStreamRef.current = null;
+        }
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+        }
         return;
       }
-      lastDrawRef.current = timestamp;
 
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      const w = canvas.width;
-      const h = canvas.height;
-
-      ctx.clearRect(0, 0, w, h);
-
-      if (!isActive || hands.length === 0) return;
-
-      for (const hand of hands) {
-        drawHandSkeleton(ctx, hand, w, h);
+      if (parentStream) {
+        if (videoRef.current) {
+          videoRef.current.srcObject = parentStream;
+          videoRef.current.play().catch(() => {});
+        }
+        return;
       }
 
-      animFrameRef.current = requestAnimationFrame(draw);
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
+        if (isCancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        localStreamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => {});
+        }
+      } catch (err) {
+        console.error('Webcam access error:', err);
+        setModelError('Camera access denied or unequipped');
+      }
+    }
+
+    setupCamera();
+
+    return () => {
+      isCancelled = true;
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+        localStreamRef.current = null;
+      }
+    };
+  }, [isActive, parentStream]);
+
+  // ── 3. Animation Loop (10 FPS Throttle & Landmark Extraction) ──
+  const processFrame = useCallback(
+    (timestamp: number) => {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      const landmarker = handLandmarkerRef.current;
+
+      if (!isActive || !video || video.readyState < 2) {
+        animFrameRef.current = requestAnimationFrame(processFrame);
+        return;
+      }
+
+      // Track FPS
+      frameCountRef.current++;
+      const elapsedFps = timestamp - fpsTimerRef.current;
+      if (elapsedFps >= 1000) {
+        setMeasuredFps(Math.round((frameCountRef.current * 1000) / elapsedFps));
+        frameCountRef.current = 0;
+        fpsTimerRef.current = timestamp;
+      }
+
+      // Throttle capture to ~10 FPS (100 ms)
+      const elapsedCapture = timestamp - lastCaptureTimeRef.current;
+      const round3 = (val: number) => Math.round(val * 1000) / 1000;
+
+      if (landmarker && elapsedCapture >= FRAME_INTERVAL_MS) {
+        lastCaptureTimeRef.current = timestamp;
+
+        try {
+          const result = landmarker.detectForVideo(video, timestamp);
+          const detectedHands: HandLandmarkData[] = [];
+          const currentHandData: HandData[] = [];
+
+          if (result.landmarks && result.landmarks.length > 0) {
+            for (let h = 0; h < result.landmarks.length; h++) {
+              const lmList = result.landmarks[h];
+              const category = result.handedness?.[h]?.[0]?.categoryName ?? 'Right';
+              const handedness: 'Left' | 'Right' = category === 'Left' ? 'Left' : 'Right';
+              const confidence = result.handedness?.[h]?.[0]?.score ?? 0.8;
+
+              // Round 21 landmarks to 3 decimal places
+              const roundedLandmarks = lmList.map((p) => ({
+                x: round3(p.x),
+                y: round3(p.y),
+                z: round3(p.z),
+              }));
+
+              detectedHands.push({
+                handedness,
+                landmarks: roundedLandmarks,
+              });
+
+              currentHandData.push({
+                landmarks: roundedLandmarks.map((l) => ({ ...l, visibility: 1 })),
+                handedness,
+                confidence,
+              });
+            }
+          }
+
+          activeHandsRef.current = currentHandData;
+
+          // Trigger callback ONLY when hands_detected > 0
+          if (detectedHands.length > 0) {
+            const payload: HandLandmarkPayload = {
+              timestamp: Date.now(),
+              hands_detected: detectedHands.length,
+              hands: detectedHands,
+            };
+
+            if (onLandmarksDetected) {
+              onLandmarksDetected(payload);
+            }
+          }
+        } catch (err) {
+          console.error('HandLandmarker detection error:', err);
+        }
+      }
+
+      // Draw canvas skeleton overlay
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          const w = canvas.width;
+          const h = canvas.height;
+          ctx.clearRect(0, 0, w, h);
+
+          const displayHands = activeHandsRef.current.length > 0 ? activeHandsRef.current : hands;
+          for (const hand of displayHands) {
+            drawHandSkeleton(ctx, hand, w, h);
+          }
+        }
+      }
+
+      animFrameRef.current = requestAnimationFrame(processFrame);
     },
-    [hands, isActive],
+    [isActive, hands, onLandmarksDetected],
   );
 
   useEffect(() => {
-    animFrameRef.current = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(animFrameRef.current);
-  }, [draw]);
+    if (isActive) {
+      animFrameRef.current = requestAnimationFrame(processFrame);
+    }
+    return () => {
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+    };
+  }, [isActive, processFrame]);
 
-  /* ── Resize canvas to match video ── */
+  // ── Canvas resize ──
   useEffect(() => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
@@ -89,9 +264,11 @@ export default function CameraPreview({
     onResize();
 
     return () => video.removeEventListener('loadedmetadata', onResize);
-  }, [stream]);
+  }, [isActive]);
 
-  const hasStream = stream !== null;
+  const activeStream = parentStream || localStreamRef.current;
+  const hasStream = activeStream !== null;
+  const displayFps = parentFps || measuredFps;
 
   return (
     <div className="relative w-full max-w-[640px] mx-auto rounded-xl overflow-hidden bg-black/60 border border-border aspect-[4/3]">
@@ -114,7 +291,7 @@ export default function CameraPreview({
 
       {/* FPS badge */}
       <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-sm text-xs font-mono text-foreground/70">
-        {fps} fps
+        {displayFps} fps
       </div>
 
       {/* Camera status indicator */}
@@ -132,8 +309,24 @@ export default function CameraPreview({
         )}
       </div>
 
+      {/* Model loading overlay */}
+      {isModelLoading && (
+        <div className="absolute inset-0 bg-black/70 backdrop-blur-xs flex flex-col items-center justify-center gap-2 text-foreground/80">
+          <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <p className="text-xs font-medium">Initializing MediaPipe Hand Detection...</p>
+        </div>
+      )}
+
+      {/* Error state */}
+      {modelError && (
+        <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-2 text-red-400 p-4 text-center">
+          <AlertCircle className="w-6 h-6" />
+          <p className="text-xs">{modelError}</p>
+        </div>
+      )}
+
       {/* Empty state */}
-      {!hasStream && (
+      {!hasStream && !isModelLoading && !modelError && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-foreground/40">
           <Camera className="w-8 h-8" />
           <p className="text-sm">Camera not started</p>
@@ -145,7 +338,6 @@ export default function CameraPreview({
 }
 
 /* ── Hand skeleton drawing ── */
-
 const CONNECTIONS: [number, number][] = [
   // Thumb
   [0, 1], [1, 2], [2, 3], [3, 4],
@@ -168,10 +360,10 @@ function drawHandSkeleton(
   h: number,
 ) {
   const { landmarks } = hand;
-  if (landmarks.length < 21) return;
+  if (!landmarks || landmarks.length < 21) return;
 
   // Draw connections
-  ctx.strokeStyle = 'oklch(0.5854 0.2041 277.12 / 0.6)'; // accent
+  ctx.strokeStyle = 'oklch(0.5854 0.2041 277.12 / 0.6)';
   ctx.lineWidth = 2;
   ctx.lineCap = 'round';
 
@@ -194,9 +386,10 @@ function drawHandSkeleton(
 
     ctx.beginPath();
     ctx.arc(x, y, 3, 0, Math.PI * 2);
-    ctx.fillStyle = i === 0
-      ? 'oklch(0.7686 0.1647 70.08)'  // wrist = secondary
-      : 'oklch(0.6658 0.1574 58.32)'; // primary
+    ctx.fillStyle =
+      i === 0
+        ? 'oklch(0.7686 0.1647 70.08)' // wrist = secondary
+        : 'oklch(0.6658 0.1574 58.32)'; // primary
     ctx.fill();
   }
 }
