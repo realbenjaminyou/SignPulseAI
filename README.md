@@ -2,42 +2,35 @@
 
 ## Real-Time Zero-Latency Sign Language and Gesture Voice Translator
 
-SignPulseAI is a real-time AI-powered application designed to interpret sign language and gestures captured through a camera and convert them into understandable text and synthesized voice.
+SignPulseAI is a real-time AI-powered application designed to interpret sign language and hand gestures captured through a live camera feed and convert them into understandable text and synthesized voice.
 
-The project aims to make communication more accessible by providing a direct interaction between visual gestures and spoken output.
+The system combines a low-latency computer vision pipeline with Gemini multimodal APIs to process visual gestures and produce real-time text and audio translations.
 
 ---
 
 ## Project Overview
 
-SignPulseAI uses a camera-based input to capture hand signs and gestures in real time. The captured visual information is processed and interpreted using a multimodal AI model.
+SignPulseAI takes a live camera feed containing sign language or hand gestures and processes the incoming frames through a low-latency gesture-processing pipeline.
 
-The recognized meaning is then:
-
-1. Captured through the camera
-2. Processed from video frames
-3. Interpreted by a multimodal AI model
-4. Converted into readable text
-5. Displayed to the user
-6. Converted into synthesized audio
+The interpreted gesture is then converted into text and synthesized audio, creating a direct interaction between visual gestures and spoken output.
 
 ### Core Workflow
 
-Camera/Webcam
-        ↓
-Video Frame Capture
-        ↓
-Visual/Gesture Processing
-        ↓
+Camera / Webcam
+↓
+Live Frame Capture
+↓
+Frame & Gesture Sequence Processing
+↓
 Gemini Multimodal AI
-        ↓
-Recognized Sign/Gesture
-        ↓
-Text Output
-        ↓
+↓
+Gesture Interpretation
+↓
+Text Translation
+↓
 Text-to-Speech
-        ↓
-Live Audio Output
+↓
+Real-Time Audio Output
 
 ---
 
@@ -45,123 +38,211 @@ Live Audio Output
 
 Communication can become difficult when people who communicate through sign language interact with people who do not understand sign language.
 
-Traditional translation methods may require another person to interpret the communication. This can introduce delays and make spontaneous communication more difficult.
+Traditional communication may require another person to interpret the signs, which can introduce delays and make spontaneous communication more difficult.
 
-SignPulseAI explores an AI-based approach where visual signs and gestures can be interpreted and transformed into text and spoken output in real time.
+SignPulseAI explores a real-time AI-based approach for transforming visual signs and gestures into understandable text and synthesized speech.
 
 ---
 
 ## Solution
 
-SignPulseAI provides a camera-based interface through which users can present signs or gestures.
+SignPulseAI provides a camera-based interface where users can perform sign language or hand gestures.
 
-The application processes the visual input and uses Gemini's multimodal capabilities to interpret the captured information. The interpreted result is presented as text and can also be converted into synthesized voice.
+The system processes the live visual input through a low-latency computer vision pipeline and Gemini multimodal APIs. The interpreted gestures are converted into readable text and synthesized audio.
 
-The goal is to create a simple and direct communication workflow:
+The core communication workflow is:
 
-Visual Gesture → AI Interpretation → Text → Voice
+**Visual Gesture → AI Interpretation → Text → Voice**
+
+The project focuses on achieving a responsive interaction with low-latency gesture-to-speech processing.
 
 ---
 
 ## Key Features
 
-- Real-time camera/video input
-- Sign and gesture interpretation
-- Multimodal AI-based processing
-- Text output for recognized gestures
+- Real-time camera input
+- Live frame extraction and processing
+- Gesture sequence processing
+- Hand gesture and sign interpretation
+- Gemini multimodal AI integration
+- Real-time text translation
 - Synthesized voice output
-- User interface for viewing video and output
+- Low-latency processing pipeline
+- Live video and audio output interface
 - Real-time interaction between visual input and generated output
 
 ---
 
 ## Technology Stack
 
-The project workflow uses the following technologies/components:
+The project uses the following technologies and components:
 
-- Gemini Multimodal AI
-- OpenCV for video/frame processing
-- FastAPI for backend/API functionality
-- WebSockets for real-time communication
-- Docker for application/containerization
+- Gemini Multimodal APIs
+- Computer Vision / Gesture Processing
+- FastAPI
+- WebSockets
+- Docker
+- Real-time camera/video processing
+- Text-to-Speech
 
 ---
 
 ## System Workflow
 
-The application follows a real-time processing pipeline:
+The application follows a low-latency real-time processing pipeline.
 
 ### 1. Camera Input
 
-The user provides visual input through a camera/webcam.
+The user provides a live camera feed containing sign language or hand gestures.
 
-### 2. Frame Processing
+### 2. Frame Extraction
 
-Video frames are captured and processed for AI interpretation.
+The incoming video stream is processed to extract frames for gesture analysis.
 
-### 3. Multimodal AI Interpretation
+### 3. Gesture Sequence Processing
 
-The visual information is sent for interpretation using Gemini Multimodal AI.
+The extracted frames are processed as gesture sequences and optimized for low-latency input to the translation system.
 
-### 4. Text Generation
+### 4. Gemini Multimodal Interpretation
 
-The interpreted sign or gesture is converted into readable text.
+The processed visual information is provided to Gemini multimodal APIs for gesture interpretation.
 
-### 5. Voice Output
+### 5. Text Translation
 
-The resulting text is converted into synthesized audio.
+The interpreted gesture is converted into understandable text.
 
-### 6. User Interface
+### 6. Text-to-Speech
 
-The frontend provides the primary interface for displaying the video input together with the generated text and live audio output.
+The generated text is converted into synthesized audio for real-time voice output.
+
+### 7. Frontend Output
+
+The frontend provides the primary interface for displaying the live video and presenting the generated text and audio output.
 
 ---
 
 ## Frontend
 
-The frontend focuses on providing a clear real-time interface where users can:
+The frontend provides the primary user interface for interacting with SignPulseAI.
 
-- View the camera/video stream
-- See the interpreted text
-- Access the generated voice output
+Users can:
+
+- View the live camera/video feed
+- See the real-time translation output
+- Access the generated audio output
 - Follow the translation process in real time
 
-The frontend is designed around the core interaction:
+The frontend is centered around the core interaction:
 
-Camera → AI Interpretation → Text → Audio
+**Camera → Gesture Processing → AI Interpretation → Text → Audio**
 
 ---
 
-## Project Role
+# Team & Responsibilities
 
-### Basit Ali — Frontend & Documentation Lead
+SignPulseAI is developed by a four-member team, with each member responsible for a specific area of the system.
 
-Responsibilities include:
+## Hammad — Lead Data Pipeline Engineer
+
+Hammad is responsible for the data-processing side of the system.
+
+### Responsibilities
+
+- Frame extraction
+- Gesture sequence data processing
+- Processing the incoming visual input
+- Optimizing the input stream
+- Preparing the input stream for the translation model
+
+---
+
+## Fisiha — DevOps & Infrastructure Lead
+
+Fisiha is responsible for the infrastructure and deployment side of the project.
+
+### Responsibilities
+
+- Containerizing the application
+- Deploying the low-latency backend streaming server
+- Setting up API endpoints
+- Supporting backend infrastructure
+- Assisting with frontend interface polish
+
+---
+
+## Basit Ali — Frontend & Documentation Lead
+
+Basit is responsible for the primary user interface and project documentation.
+
+### Responsibilities
 
 - Developing the primary user interface
-- Rendering the video output
-- Rendering the live audio/output experience
-- Preparing the pitch presentation
+- Rendering the live video output
+- Rendering the live audio output
+- Building the frontend interaction experience
+- Preparing pitch presentation slides
 - Preparing the hackathon submission write-up
-- Preparing the project README
+- Preparing and maintaining the project README
 - Documenting the project workflow and implementation
 
 ---
 
-## Repository
+## Benjamin You — Systems Architecture & AI Integration
 
-Project repository:
+Benjamin is responsible for the overall system architecture and AI integration.
 
-SignPulseAI
+### Responsibilities
+
+- Systems architecture
+- Gemini multimodal API integration
+- Optimizing low-latency gesture-to-speech prompt workflows
+- Connecting the end-to-end system logic
+- Coordinating the integration between the major system components
+
+---
+
+## End-to-End Architecture
+
+The overall system can be represented as:
+
+Camera
+↓
+Frame Extraction
+↓
+Gesture Sequence Processing
+↓
+Low-Latency Input Stream
+↓
+Gemini Multimodal AI
+↓
+Gesture Interpretation
+↓
+Text Generation
+↓
+Text-to-Speech
+↓
+Frontend
+↓
+Live Text + Audio Output
 
 ---
 
 ## Purpose
 
-The purpose of SignPulseAI is to explore how multimodal AI can be used to make visual communication more accessible by transforming signs and gestures into text and synthesized voice in a real-time interaction.
+The purpose of SignPulseAI is to explore how multimodal AI and real-time computer vision can be used to make visual communication more accessible.
+
+By connecting live gesture input with AI interpretation, text generation, and synthesized speech, the project aims to provide a more direct and responsive communication experience.
 
 ---
 
 ## Hackathon
 
-This project is being developed for the Lablab AI Hackathon.
+SignPulseAI is being developed as a submission for the **Lablab AI Hackathon**.
+
+---
+
+## Repository
+
+**Project:** SignPulseAI
+
+The team uses feature-based development branches so that each member can work independently on their assigned area before integrating changes into the main project.
